@@ -1,1 +1,67 @@
+import os
+import logging
+from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROQ_KEY = os.getenv("GROQ_API_KEY")
+
+from groq import Groq
+client = Groq(api_key=GROQ_KEY)
+
+history = {}  # user_id → list[dict]
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Пиши любой вопрос — отвечу быстро (Groq).")
+
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+    if not text: return
+
+    if uid not in history:
+        history[uid] = []
+
+    history[uid].append({"role": "user", "content": text})
+    if len(history[uid]) > 14:
+        history[uid] = history[uid][-14:]
+
+    try:
+        resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",          # самая надёжная бесплатная
+            messages=[{"role": "system", "content": "Краткий, точный, полезный помощник на русском."}] + history[uid],
+            temperature=0.65,
+            max_tokens=900,
+        )
+        answer = resp.choices[0].message.content
+        history[uid].append({"role": "assistant", "content": answer})
+        await update.message.reply_text(answer)
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка Groq: {str(e)[:80]}…")
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+    # Webhook (Render ожидает порт 10000 по умолчанию)
+    port = int(os.environ.get("PORT", 10000))
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TOKEN,
+        webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}"
+    )
+
+if __name__ == "__main__":
+    main()
